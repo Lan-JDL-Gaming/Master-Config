@@ -1,0 +1,13 @@
+{
+  "ConfigVersion": "1.0.0",
+  "BoostDurationHours": 3,
+  "GatherMultiplierBoost": 3.0,
+  "GatherMultiplierNormal": 1.0,
+  "OfflineProtectionMultiplier": 5.0,
+  "WipeDate": "2024-05-20",
+  "TiersSchedule": {
+    "Tier1_Days": 3,
+    "Tier2_Days": 3,
+    "Tier3_Days": 1
+  }
+}
