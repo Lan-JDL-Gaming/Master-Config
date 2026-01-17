@@ -8,12 +8,9 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("LanJDL-Core", "DevRust", "1.7.1")]
+    [Info("LanJDL-Core", "DevRust", "1.7.2")]
     public class LanJDLCore : RustPlugin
     {
-        // On déclare explicitement la bibliothèque WebRequests
-        private readonly WebRequests webrequests = Interface.Oxide.GetLibrary<WebRequests>();
-
         private string ConfigUrl = "https://raw.githubusercontent.com/Lan-JDL-Gaming/Master-Config/refs/heads/main/server_settings.json";
         private RemoteConfig remoteSettings;
         private Dictionary<string, PlayerSessionData> playerStats = new Dictionary<string, PlayerSessionData>();
@@ -55,7 +52,6 @@ namespace Oxide.Plugins
                     remoteSettings = JsonConvert.DeserializeObject<RemoteConfig>(response);
                     Puts("[LanJDL] Config GitHub synchronisée avec succès.");
                 }
-                else Puts($"[LanJDL] ERREUR GitHub: Code {code}");
             }, this);
         }
 
@@ -65,8 +61,7 @@ namespace Oxide.Plugins
             if (now.Hour == 4 && now.Minute == 25 && !maintenanceWarned)
             {
                 maintenanceWarned = true;
-                string msg = "🛠️ **MAINTENANCE PRÉVUE**\nLe serveur va redémarrer dans **5 minutes** (4h30) pour la maintenance quotidienne. Mettez-vous en sécurité !";
-                PostEmbed("⚠️ ALERTE MAINTENANCE", msg, 15105570, false);
+                PostEmbed("⚠️ ALERTE MAINTENANCE", "🛠️ **Le serveur va redémarrer dans 5 minutes** (4h30) pour la maintenance quotidienne.", 15105570, false);
                 ConsoleSystem.Run(ConsoleSystem.Option.Server, "say <color=#ff4444>MAINTENANCE : Redémarrage dans 5 minutes !</color>");
             }
             if (now.Hour == 5) maintenanceWarned = false;
@@ -90,7 +85,6 @@ namespace Oxide.Plugins
             webrequests.Enqueue(url, json, (code, response) => {}, this, RequestMethod.POST, new Dictionary<string, string> { { "Content-Type", "application/json" } });
         }
 
-        // Logic de protection et récolte inchangée
         void OnEntityTakeDamage(BaseCombatEntity entity, HitInfo info)
         {
             if (entity == null || info == null || remoteSettings == null || !(entity is BuildingBlock)) return;
@@ -106,9 +100,7 @@ namespace Oxide.Plugins
         void OnDispenserGather(ResourceDispenser dispenser, BaseEntity entity, Item item)
         {
             var player = entity as BasePlayer;
-            if (player == null || remoteSettings == null) return;
-            if (!playerStats.ContainsKey(player.UserIDString)) playerStats[player.UserIDString] = new PlayerSessionData { LastResetDate = DateTime.Now.ToString("yyyy-MM-dd") };
-            
+            if (player == null || remoteSettings == null || !playerStats.ContainsKey(player.UserIDString)) return;
             double total = playerStats[player.UserIDString].SecondsPlayedToday + (DateTime.Now - playerStats[player.UserIDString].LastLogin).TotalSeconds;
             float mult = (total < (remoteSettings.BoostDurationHours * 3600)) ? remoteSettings.GatherMultiplierBoost : remoteSettings.GatherMultiplierNormal;
             item.amount = (int)(item.amount * mult);
@@ -119,7 +111,7 @@ namespace Oxide.Plugins
             playerStats[player.UserIDString].LastLogin = DateTime.Now;
         }
 
-        void SaveData() => Interface.Oxide.DataFiles.WriteObject("LanJDL_PlayerData", playerStats);
-        void LoadData() => playerStats = Interface.Oxide.DataFiles.ReadObject<Dictionary<string, PlayerSessionData>>("LanJDL_PlayerData");
+        void SaveData() => Interface.Oxide.DataFileSystem.WriteObject("LanJDL_PlayerData", playerStats);
+        void LoadData() => playerStats = Interface.Oxide.DataFileSystem.ReadObject<Dictionary<string, PlayerSessionData>>("LanJDL_PlayerData");
     }
 }
