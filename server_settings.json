@@ -8,6 +8,7 @@
   "TiersSchedule": {
     "Tier1_Days": 3,
     "Tier2_Days": 3,
-    "Tier3_Days": 1
+    "Tier3_Days": 1,
+    "DiscordWebhookUrl": "https://discord.com/api/webhooks/1462098256782823557/azXYCDoqLsMHyddJutz6FTCv6wLVMjPLyD_h9h5pmYjK3pEnV5NJtKfpkDCsZpPzV4um"
   }
 }
