@@ -8,9 +8,12 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("LanJDL-Core", "DevRust", "1.7.2")]
+    [Info("LanJDL-Core", "DevRust", "1.7.3")]
     public class LanJDLCore : RustPlugin
     {
+        // On récupère manuellement la bibliothèque WebRequests pour éviter l'erreur "does not exist"
+        private WebRequests webrequests = Interface.Oxide.GetLibrary<WebRequests>();
+
         private string ConfigUrl = "https://raw.githubusercontent.com/Lan-JDL-Gaming/Master-Config/refs/heads/main/server_settings.json";
         private RemoteConfig remoteSettings;
         private Dictionary<string, PlayerSessionData> playerStats = new Dictionary<string, PlayerSessionData>();
@@ -46,6 +49,7 @@ namespace Oxide.Plugins
 
         private void UpdateConfigFromGitHub()
         {
+            // Utilisation de la référence locale 'webrequests' déclarée plus haut
             webrequests.Enqueue(ConfigUrl, null, (code, response) => {
                 if (code == 200 && !string.IsNullOrEmpty(response))
                 {
