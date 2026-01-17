@@ -13,7 +13,6 @@ namespace Oxide.Plugins
         private string ConfigUrl = "https://raw.githubusercontent.com/Lan-JDL-Gaming/Master-Config/refs/heads/main/server_settings.json";
         private RemoteConfig remoteSettings;
         private Dictionary<string, PlayerSessionData> playerStats = new Dictionary<string, PlayerSessionData>();
-        private bool tierAnnouncedToday = false;
 
         private class RemoteConfig
         {
@@ -21,8 +20,8 @@ namespace Oxide.Plugins
             public float GatherMultiplierBoost { get; set; }
             public float GatherMultiplierNormal { get; set; }
             public float OfflineProtectionMultiplier { get; set; }
-            public string WipeDate { get; set; }
-            public string DiscordWebhookUrl { get; set; } // Nouvelle variable
+            public string DiscordWebhookUrl { get; set; }
+            public string AdminWebhookUrl { get; set; }
         }
 
         private class PlayerSessionData
@@ -32,119 +31,84 @@ namespace Oxide.Plugins
             public string LastResetDate;
         }
 
-        void Init()
-        {
-            LoadData();
-            UpdateConfigFromGitHub();
-        }
-
-        // --- OPTION 2 : ALERTE STATUT SERVEUR (Démarrage) ---
-        void OnServerInitialized()
-        {
-            timer.Once(5f, () => {
-                if (remoteSettings != null)
-                {
-                    PostToDiscord("🚀 **Système LAN JDL en ligne**\nLe serveur est prêt. Bon jeu à tous !");
-                    CheckAndAnnounceTier();
-                }
-            });
-        }
+        void Init() => UpdateConfigFromGitHub();
+        void OnServerInitialized() { LoadData(); timer.Once(5f, () => PostEmbed("Lan JDL Système", "🚀 Le serveur est désormais en ligne et prêt à accueillir les joueurs.", 3066993, false)); }
 
         private void UpdateConfigFromGitHub()
         {
-            webrequests.Enqueue(ConfigUrl, null, (code, response) =>
-            {
-                if (code != 200 || string.IsNullOrEmpty(response)) return;
-                remoteSettings = JsonConvert.DeserializeObject<RemoteConfig>(response);
-                Puts($"[LanJDL] Config synchronisée.");
+            webrequests.Enqueue(ConfigUrl, null, (code, response) => {
+                if (code == 200 && !string.IsNullOrEmpty(response))
+                    remoteSettings = JsonConvert.DeserializeObject<RemoteConfig>(response);
             }, this);
         }
 
-        // --- OPTION 1 : ANNONCE DES TIERS ---
-        private void CheckAndAnnounceTier()
-        {
-            int day = GetDaysSinceWipe();
-            string message = "";
-
-            if (day == 1) message = "📅 **Wipe Day !**\nL'aventure commence. Tier 1 débloqué !";
-            else if (day == 4) message = "🛡️ **Progression : Tier 2 Débloqué !**\nLes nouveaux établis et crafts sont désormais disponibles.";
-            else if (day == 7) message = "⚔️ **Progression : Tier 3 Débloqué !**\nC'est l'heure du endgame. Bonne chance !";
-
-            if (!string.IsNullOrEmpty(message))
-            {
-                PostToDiscord(message);
-            }
-        }
-
-        // --- LOGIQUE WEBHOOK DISCORD ---
-        private void PostToDiscord(string message)
-        {
-            if (remoteSettings == null || string.IsNullOrEmpty(remoteSettings.DiscordWebhookUrl)) return;
-
-            var payload = new { content = message };
-            var json = JsonConvert.SerializeObject(payload);
-
-            webrequests.Enqueue(remoteSettings.DiscordWebhookUrl, json, (code, response) => {}, this, RequestMethod.POST, new Dictionary<string, string> {
-                { "Content-Type", "application/json" }
-            });
-        }
-
-        // --- CALCUL DU JOUR (Automatique) ---
-        private int GetDaysSinceWipe()
-        {
-            try {
-                string saveFolder = $"{ConVar.Server.root}/save/{ConVar.Server.identity}";
-                var files = new System.IO.DirectoryInfo(saveFolder).GetFiles("proceduralmap.*.sav");
-                if (files.Length > 0) {
-                    DateTime wipeDate = files[0].CreationTime;
-                    return (DateTime.Now.Date - wipeDate.Date).Days + 1;
-                }
-            } catch { }
-            return 1;
-        }
-
-        // --- RÉCOLTE & PROTECTION (Inchangé) ---
+        // --- ALERTE RAID OFFLINE (STYLISÉE) ---
         void OnEntityTakeDamage(BaseCombatEntity entity, HitInfo info)
         {
             if (entity == null || info == null || remoteSettings == null || !(entity is BuildingBlock)) return;
-            if (entity.OwnerID == 0) return;
-            var target = BasePlayer.FindByID(entity.OwnerID);
-            if (target == null || !target.IsConnected) info.damageTypes.ScaleAll(1f / remoteSettings.OfflineProtectionMultiplier);
+            if (entity.OwnerID == 0 || info.InitiatorPlayer == null) return;
+
+            var owner = BasePlayer.FindByID(entity.OwnerID);
+            if (owner == null || !owner.IsConnected)
+            {
+                info.damageTypes.ScaleAll(1f / remoteSettings.OfflineProtectionMultiplier);
+                if (info.damageTypes.Has(Rust.DamageType.Explosion))
+                {
+                    PostEmbed("⚠️ ALERTE RAID OFFLINE", $"**Attaquant :** {info.InitiatorPlayer.displayName}\n**Cible :** {owner?.displayName ?? "Inconnu"}\n**Action :** Utilisation d'explosifs sur structure protégée (x{remoteSettings.OfflineProtectionMultiplier}).", 15158332, true);
+                }
+            }
+        }
+
+        // --- LOGIQUE WEBHOOK AVEC EMBEDS ---
+        private void PostEmbed(string title, string description, int color, bool isAdmin)
+        {
+            string url = isAdmin ? remoteSettings?.AdminWebhookUrl : remoteSettings?.DiscordWebhookUrl;
+            if (string.IsNullOrEmpty(url)) return;
+
+            var embed = new {
+                title = title,
+                description = description,
+                color = color,
+                footer = new { text = $"Lan JDL - {DateTime.Now:HH:mm}" }
+            };
+
+            var payload = new { embeds = new[] { embed } };
+            var json = JsonConvert.SerializeObject(payload);
+
+            webrequests.Enqueue(url, json, (code, response) => {}, this, RequestMethod.POST, new Dictionary<string, string> { { "Content-Type", "application/json" } });
+        }
+
+        // --- RESTE DU CODE (Calcul jour, Boost, etc.) ---
+        private int GetDaysSinceWipe() {
+            try {
+                string path = $"{ConVar.Server.root}/save/{ConVar.Server.identity}";
+                var files = new System.IO.DirectoryInfo(path).GetFiles("proceduralmap.*.sav");
+                if (files.Length > 0) return (DateTime.Now.Date - files[0].CreationTime.Date).Days + 1;
+            } catch { }
+            return 1;
         }
 
         void OnDispenserGather(ResourceDispenser dispenser, BaseEntity entity, Item item)
         {
             var player = entity as BasePlayer;
             if (player == null || remoteSettings == null) return;
-            float mult = IsBoostActive(player) ? remoteSettings.GatherMultiplierBoost : remoteSettings.GatherMultiplierNormal;
-            item.amount = (int)(item.amount * mult);
+            bool active = IsBoostActive(player);
+            item.amount = (int)(item.amount * (active ? remoteSettings.GatherMultiplierBoost : remoteSettings.GatherMultiplierNormal));
         }
 
-        private bool IsBoostActive(BasePlayer player)
-        {
-            string id = player.UserIDString;
-            CheckAndResetDay(id);
-            double total = playerStats[id].SecondsPlayedToday + (DateTime.Now - playerStats[id].LastLogin).TotalSeconds;
+        private bool IsBoostActive(BasePlayer player) {
+            if (!playerStats.ContainsKey(player.UserIDString)) return false;
+            double total = playerStats[player.UserIDString].SecondsPlayedToday + (DateTime.Now - playerStats[player.UserIDString].LastLogin).TotalSeconds;
             return total < (remoteSettings.BoostDurationHours * 3600);
         }
 
-        void OnPlayerConnected(BasePlayer player)
-        {
+        void OnPlayerConnected(BasePlayer player) {
             string id = player.UserIDString;
-            if (!playerStats.ContainsKey(id)) playerStats[id] = new PlayerSessionData { LastResetDate = DateTime.Now.ToString("yyyy-MM-dd") };
-            playerStats[id].LastLogin = DateTime.Now;
-            CheckAndResetDay(id);
-            player.ChatMessage($"<color=#55ff55>Lan JDL - Jour {GetDaysSinceWipe()}</color>");
-        }
-
-        private void CheckAndResetDay(string id)
-        {
-            if (playerStats[id].LastResetDate != DateTime.Now.ToString("yyyy-MM-dd"))
-            {
-                playerStats[id].SecondsPlayedToday = 0;
-                playerStats[id].LastResetDate = DateTime.Now.ToString("yyyy-MM-dd");
-                playerStats[id].LastLogin = DateTime.Now;
+            if (!playerStats.ContainsKey(id)) {
+                playerStats[id] = new PlayerSessionData { LastResetDate = DateTime.Now.ToString("yyyy-MM-dd") };
+                PostEmbed("🆕 Nouveau Citoyen", $"{player.displayName} a rejoint l'aventure Lan JDL !", 3447003, true);
             }
+            playerStats[id].LastLogin = DateTime.Now;
         }
 
         void SaveData() => Interface.Oxide.DataFiles.WriteObject("LanJDL_PlayerData", playerStats);
