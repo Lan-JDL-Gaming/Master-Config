@@ -8,7 +8,7 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("LanJDL-Core", "DevRust", "1.2.0")]
+    [Info("LanJDL-Core", "DevRust", "1.0.0")]
     public class LanJDLCore : RustPlugin
     {
         private string ConfigUrl = "https://raw.githubusercontent.com/Lan-JDL-Gaming/Master-Config/refs/heads/main/server_settings.json";
