@@ -52,4 +52,4 @@ Bienvenue sur le serveur **Lan JDL**. Ce règlement garantit une expérience com
 
 ### 🚫 5. COMPORTEMENT
 
-* Toxicité/Racisme = **Ban défi
+* Toxicité/Racisme = **Ban définitif
