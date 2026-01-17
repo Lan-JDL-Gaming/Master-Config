@@ -1,11 +1,9 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
 using Newtonsoft.Json;
 using Oxide.Core;
 using Oxide.Core.Libraries;
 using Oxide.Core.Plugins;
-using UnityEngine;
 
 namespace Oxide.Plugins
 {
@@ -15,6 +13,7 @@ namespace Oxide.Plugins
         private string ConfigUrl = "https://raw.githubusercontent.com/Lan-JDL-Gaming/Master-Config/refs/heads/main/server_settings.json";
         private RemoteConfig remoteSettings;
         private Dictionary<string, PlayerSessionData> playerStats = new Dictionary<string, PlayerSessionData>();
+        private bool tierAnnouncedToday = false;
 
         private class RemoteConfig
         {
@@ -22,7 +21,8 @@ namespace Oxide.Plugins
             public float GatherMultiplierBoost { get; set; }
             public float GatherMultiplierNormal { get; set; }
             public float OfflineProtectionMultiplier { get; set; }
-            public string WipeDate { get; set; } 
+            public string WipeDate { get; set; }
+            public string DiscordWebhookUrl { get; set; } // Nouvelle variable
         }
 
         private class PlayerSessionData
@@ -38,88 +38,80 @@ namespace Oxide.Plugins
             UpdateConfigFromGitHub();
         }
 
+        // --- OPTION 2 : ALERTE STATUT SERVEUR (Démarrage) ---
+        void OnServerInitialized()
+        {
+            timer.Once(5f, () => {
+                if (remoteSettings != null)
+                {
+                    PostToDiscord("🚀 **Système LAN JDL en ligne**\nLe serveur est prêt. Bon jeu à tous !");
+                    CheckAndAnnounceTier();
+                }
+            });
+        }
+
         private void UpdateConfigFromGitHub()
         {
             webrequests.Enqueue(ConfigUrl, null, (code, response) =>
             {
                 if (code != 200 || string.IsNullOrEmpty(response)) return;
                 remoteSettings = JsonConvert.DeserializeObject<RemoteConfig>(response);
-                Puts($"[LanJDL] Config GitHub synchronisée. Jour actuel : {GetDaysSinceWipe()}");
+                Puts($"[LanJDL] Config synchronisée.");
             }, this);
         }
 
-        // --- CALCUL AUTOMATIQUE DU JOUR DE WIPE ---
-        private int GetDaysSinceWipe()
+        // --- OPTION 1 : ANNONCE DES TIERS ---
+        private void CheckAndAnnounceTier()
         {
-            DateTime wipeDate;
+            int day = GetDaysSinceWipe();
+            string message = "";
 
-            // 1. On essaie de lire la date forcée sur GitHub
-            if (remoteSettings != null && !string.IsNullOrEmpty(remoteSettings.WipeDate))
+            if (day == 1) message = "📅 **Wipe Day !**\nL'aventure commence. Tier 1 débloqué !";
+            else if (day == 4) message = "🛡️ **Progression : Tier 2 Débloqué !**\nLes nouveaux établis et crafts sont désormais disponibles.";
+            else if (day == 7) message = "⚔️ **Progression : Tier 3 Débloqué !**\nC'est l'heure du endgame. Bonne chance !";
+
+            if (!string.IsNullOrEmpty(message))
             {
-                if (DateTime.TryParse(remoteSettings.WipeDate, out wipeDate))
-                    return (DateTime.Now.Date - wipeDate.Date).Days + 1;
+                PostToDiscord(message);
             }
-
-            // 2. Sinon, on regarde la date de création du fichier de la map (.sav)
-            try
-            {
-                string saveFolder = $"{ConVar.Server.root}/save/{ConVar.Server.identity}";
-                if (Directory.Exists(saveFolder))
-                {
-                    var files = new DirectoryInfo(saveFolder).GetFiles("proceduralmap.*.sav");
-                    if (files.Length > 0)
-                    {
-                        wipeDate = files[0].CreationTime;
-                        return (DateTime.Now.Date - wipeDate.Date).Days + 1;
-                    }
-                }
-            }
-            catch { }
-
-            return 1; // Par défaut Jour 1
         }
 
-        // --- PROTECTION OFFLINE X5 ---
+        // --- LOGIQUE WEBHOOK DISCORD ---
+        private void PostToDiscord(string message)
+        {
+            if (remoteSettings == null || string.IsNullOrEmpty(remoteSettings.DiscordWebhookUrl)) return;
+
+            var payload = new { content = message };
+            var json = JsonConvert.SerializeObject(payload);
+
+            webrequests.Enqueue(remoteSettings.DiscordWebhookUrl, json, (code, response) => {}, this, RequestMethod.POST, new Dictionary<string, string> {
+                { "Content-Type", "application/json" }
+            });
+        }
+
+        // --- CALCUL DU JOUR (Automatique) ---
+        private int GetDaysSinceWipe()
+        {
+            try {
+                string saveFolder = $"{ConVar.Server.root}/save/{ConVar.Server.identity}";
+                var files = new System.IO.DirectoryInfo(saveFolder).GetFiles("proceduralmap.*.sav");
+                if (files.Length > 0) {
+                    DateTime wipeDate = files[0].CreationTime;
+                    return (DateTime.Now.Date - wipeDate.Date).Days + 1;
+                }
+            } catch { }
+            return 1;
+        }
+
+        // --- RÉCOLTE & PROTECTION (Inchangé) ---
         void OnEntityTakeDamage(BaseCombatEntity entity, HitInfo info)
         {
             if (entity == null || info == null || remoteSettings == null || !(entity is BuildingBlock)) return;
-
-            var ownerId = entity.OwnerID;
-            if (ownerId == 0) return;
-
-            var targetPlayer = BasePlayer.FindByID(ownerId);
-            if (targetPlayer == null || !targetPlayer.IsConnected)
-            {
-                info.damageTypes.ScaleAll(1f / remoteSettings.OfflineProtectionMultiplier);
-            }
+            if (entity.OwnerID == 0) return;
+            var target = BasePlayer.FindByID(entity.OwnerID);
+            if (target == null || !target.IsConnected) info.damageTypes.ScaleAll(1f / remoteSettings.OfflineProtectionMultiplier);
         }
 
-        // --- PROGRESSION DES TIERS ---
-        object CanInteract(BasePlayer player, Workbench workbench)
-        {
-            int day = GetDaysSinceWipe();
-            if (workbench.Workbenchlevel == 2 && day < 4) 
-            {
-                player.ChatMessage("<color=#ff4444>[LanJDL]</color> Tier 2 bloqué jusqu'au Jour 4.");
-                return false;
-            }
-            if (workbench.Workbenchlevel == 3 && day < 7) 
-            {
-                player.ChatMessage("<color=#ff4444>[LanJDL]</color> Tier 3 bloqué jusqu'au Jour 7.");
-                return false;
-            }
-            return null;
-        }
-
-        object CanCraft(ItemCrafter itemCrafter, ItemBlueprint bp, int amount)
-        {
-            int day = GetDaysSinceWipe();
-            if (bp.workbenchLevelRequired == 2 && day < 4) return false;
-            if (bp.workbenchLevelRequired == 3 && day < 7) return false;
-            return null;
-        }
-
-        // --- RÉCOLTE & BOOST ---
         void OnDispenserGather(ResourceDispenser dispenser, BaseEntity entity, Item item)
         {
             var player = entity as BasePlayer;
@@ -139,22 +131,10 @@ namespace Oxide.Plugins
         void OnPlayerConnected(BasePlayer player)
         {
             string id = player.UserIDString;
-            if (!playerStats.ContainsKey(id)) 
-                playerStats[id] = new PlayerSessionData { LastResetDate = DateTime.Now.ToString("yyyy-MM-dd") };
+            if (!playerStats.ContainsKey(id)) playerStats[id] = new PlayerSessionData { LastResetDate = DateTime.Now.ToString("yyyy-MM-dd") };
             playerStats[id].LastLogin = DateTime.Now;
             CheckAndResetDay(id);
-
-            player.ChatMessage($"<color=#55ff55>Lan JDL - Jour {GetDaysSinceWipe()} du Wipe</color>");
-            player.ChatMessage($"Boost x{remoteSettings?.GatherMultiplierBoost} actif: {GetRemainingBoostTime(player)} min restantes.");
-        }
-
-        void OnPlayerDisconnected(BasePlayer player)
-        {
-            if (playerStats.ContainsKey(player.UserIDString))
-            {
-                playerStats[player.UserIDString].SecondsPlayedToday += (DateTime.Now - playerStats[player.UserIDString].LastLogin).TotalSeconds;
-                SaveData();
-            }
+            player.ChatMessage($"<color=#55ff55>Lan JDL - Jour {GetDaysSinceWipe()}</color>");
         }
 
         private void CheckAndResetDay(string id)
@@ -165,14 +145,6 @@ namespace Oxide.Plugins
                 playerStats[id].LastResetDate = DateTime.Now.ToString("yyyy-MM-dd");
                 playerStats[id].LastLogin = DateTime.Now;
             }
-        }
-
-        private int GetRemainingBoostTime(BasePlayer player)
-        {
-            if (remoteSettings == null) return 0;
-            double total = playerStats[player.UserIDString].SecondsPlayedToday + (DateTime.Now - playerStats[player.UserIDString].LastLogin).TotalSeconds;
-            double remaining = (remoteSettings.BoostDurationHours * 3600) - total;
-            return remaining > 0 ? (int)(remaining / 60) : 0;
         }
 
         void SaveData() => Interface.Oxide.DataFiles.WriteObject("LanJDL_PlayerData", playerStats);
