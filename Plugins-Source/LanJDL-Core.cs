@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using Newtonsoft.Json;
 using Oxide.Core;
 using Oxide.Core.Libraries;
@@ -21,7 +22,7 @@ namespace Oxide.Plugins
             public float GatherMultiplierBoost { get; set; }
             public float GatherMultiplierNormal { get; set; }
             public float OfflineProtectionMultiplier { get; set; }
-            public string WipeDate { get; set; } // Format: "YYYY-MM-DD"
+            public string WipeDate { get; set; } 
         }
 
         private class PlayerSessionData
@@ -43,15 +44,45 @@ namespace Oxide.Plugins
             {
                 if (code != 200 || string.IsNullOrEmpty(response)) return;
                 remoteSettings = JsonConvert.DeserializeObject<RemoteConfig>(response);
-                Puts($"[LanJDL] Config chargée. Wipe le: {remoteSettings.WipeDate}");
+                Puts($"[LanJDL] Config GitHub synchronisée. Jour actuel : {GetDaysSinceWipe()}");
             }, this);
+        }
+
+        // --- CALCUL AUTOMATIQUE DU JOUR DE WIPE ---
+        private int GetDaysSinceWipe()
+        {
+            DateTime wipeDate;
+
+            // 1. On essaie de lire la date forcée sur GitHub
+            if (remoteSettings != null && !string.IsNullOrEmpty(remoteSettings.WipeDate))
+            {
+                if (DateTime.TryParse(remoteSettings.WipeDate, out wipeDate))
+                    return (DateTime.Now.Date - wipeDate.Date).Days + 1;
+            }
+
+            // 2. Sinon, on regarde la date de création du fichier de la map (.sav)
+            try
+            {
+                string saveFolder = $"{ConVar.Server.root}/save/{ConVar.Server.identity}";
+                if (Directory.Exists(saveFolder))
+                {
+                    var files = new DirectoryInfo(saveFolder).GetFiles("proceduralmap.*.sav");
+                    if (files.Length > 0)
+                    {
+                        wipeDate = files[0].CreationTime;
+                        return (DateTime.Now.Date - wipeDate.Date).Days + 1;
+                    }
+                }
+            }
+            catch { }
+
+            return 1; // Par défaut Jour 1
         }
 
         // --- PROTECTION OFFLINE X5 ---
         void OnEntityTakeDamage(BaseCombatEntity entity, HitInfo info)
         {
-            if (entity == null || info == null || remoteSettings == null) return;
-            if (!(entity is BuildingBlock)) return; // On ne protège que les structures
+            if (entity == null || info == null || remoteSettings == null || !(entity is BuildingBlock)) return;
 
             var ownerId = entity.OwnerID;
             if (ownerId == 0) return;
@@ -59,59 +90,40 @@ namespace Oxide.Plugins
             var targetPlayer = BasePlayer.FindByID(ownerId);
             if (targetPlayer == null || !targetPlayer.IsConnected)
             {
-                // Le joueur (ou le chef de clan) est hors-ligne
                 info.damageTypes.ScaleAll(1f / remoteSettings.OfflineProtectionMultiplier);
             }
         }
 
-        // --- PROGRESSION DES TIERS (BLOCAGE WORKBENCH) ---
+        // --- PROGRESSION DES TIERS ---
         object CanInteract(BasePlayer player, Workbench workbench)
         {
-            if (remoteSettings == null) return null;
-
-            int daysSinceWipe = GetDaysSinceWipe();
-            int benchLevel = workbench.Workbenchlevel;
-
-            if (benchLevel == 2 && daysSinceWipe < 4)
+            int day = GetDaysSinceWipe();
+            if (workbench.Workbenchlevel == 2 && day < 4) 
             {
-                player.ChatMessage("<color=#ff4444>[LanJDL]</color> Le Tier 2 sera débloqué au Jour 4.");
+                player.ChatMessage("<color=#ff4444>[LanJDL]</color> Tier 2 bloqué jusqu'au Jour 4.");
                 return false;
             }
-            if (benchLevel == 3 && daysSinceWipe < 7)
+            if (workbench.Workbenchlevel == 3 && day < 7) 
             {
-                player.ChatMessage("<color=#ff4444>[LanJDL]</color> Le Tier 3 sera débloqué au Jour 7.");
+                player.ChatMessage("<color=#ff4444>[LanJDL]</color> Tier 3 bloqué jusqu'au Jour 7.");
                 return false;
             }
             return null;
         }
 
-        // Bloque aussi le craft direct si le niveau requis n'est pas atteint
         object CanCraft(ItemCrafter itemCrafter, ItemBlueprint bp, int amount)
         {
-            if (remoteSettings == null) return null;
-            int daysSinceWipe = GetDaysSinceWipe();
-
-            if (bp.workbenchLevelRequired == 2 && daysSinceWipe < 4) return false;
-            if (bp.workbenchLevelRequired == 3 && daysSinceWipe < 7) return false;
+            int day = GetDaysSinceWipe();
+            if (bp.workbenchLevelRequired == 2 && day < 4) return false;
+            if (bp.workbenchLevelRequired == 3 && day < 7) return false;
             return null;
         }
 
-        private int GetDaysSinceWipe()
-        {
-            DateTime wipe;
-            if (DateTime.TryParse(remoteSettings.WipeDate, out wipe))
-            {
-                return (DateTime.Now.Date - wipe.Date).Days + 1;
-            }
-            return 1;
-        }
-
-        // --- LOGIQUE DE RÉCOLTE (BOOST 3H) ---
+        // --- RÉCOLTE & BOOST ---
         void OnDispenserGather(ResourceDispenser dispenser, BaseEntity entity, Item item)
         {
             var player = entity as BasePlayer;
             if (player == null || remoteSettings == null) return;
-
             float mult = IsBoostActive(player) ? remoteSettings.GatherMultiplierBoost : remoteSettings.GatherMultiplierNormal;
             item.amount = (int)(item.amount * mult);
         }
@@ -120,8 +132,8 @@ namespace Oxide.Plugins
         {
             string id = player.UserIDString;
             CheckAndResetDay(id);
-            double totalToday = playerStats[id].SecondsPlayedToday + (DateTime.Now - playerStats[id].LastLogin).TotalSeconds;
-            return totalToday < (remoteSettings.BoostDurationHours * 3600);
+            double total = playerStats[id].SecondsPlayedToday + (DateTime.Now - playerStats[id].LastLogin).TotalSeconds;
+            return total < (remoteSettings.BoostDurationHours * 3600);
         }
 
         void OnPlayerConnected(BasePlayer player)
@@ -129,32 +141,28 @@ namespace Oxide.Plugins
             string id = player.UserIDString;
             if (!playerStats.ContainsKey(id)) 
                 playerStats[id] = new PlayerSessionData { LastResetDate = DateTime.Now.ToString("yyyy-MM-dd") };
-            
             playerStats[id].LastLogin = DateTime.Now;
             CheckAndResetDay(id);
 
-            int days = GetDaysSinceWipe();
-            player.ChatMessage($"<color=#55ff55>Lan JDL - Jour {days} du Wipe</color>");
+            player.ChatMessage($"<color=#55ff55>Lan JDL - Jour {GetDaysSinceWipe()} du Wipe</color>");
             player.ChatMessage($"Boost x{remoteSettings?.GatherMultiplierBoost} actif: {GetRemainingBoostTime(player)} min restantes.");
         }
 
         void OnPlayerDisconnected(BasePlayer player)
         {
-            string id = player.UserIDString;
-            if (playerStats.ContainsKey(id))
+            if (playerStats.ContainsKey(player.UserIDString))
             {
-                playerStats[id].SecondsPlayedToday += (DateTime.Now - playerStats[id].LastLogin).TotalSeconds;
+                playerStats[player.UserIDString].SecondsPlayedToday += (DateTime.Now - playerStats[player.UserIDString].LastLogin).TotalSeconds;
                 SaveData();
             }
         }
 
         private void CheckAndResetDay(string id)
         {
-            string today = DateTime.Now.ToString("yyyy-MM-dd");
-            if (playerStats[id].LastResetDate != today)
+            if (playerStats[id].LastResetDate != DateTime.Now.ToString("yyyy-MM-dd"))
             {
                 playerStats[id].SecondsPlayedToday = 0;
-                playerStats[id].LastResetDate = today;
+                playerStats[id].LastResetDate = DateTime.Now.ToString("yyyy-MM-dd");
                 playerStats[id].LastLogin = DateTime.Now;
             }
         }
@@ -162,8 +170,8 @@ namespace Oxide.Plugins
         private int GetRemainingBoostTime(BasePlayer player)
         {
             if (remoteSettings == null) return 0;
-            double totalToday = playerStats[player.UserIDString].SecondsPlayedToday + (DateTime.Now - playerStats[player.UserIDString].LastLogin).TotalSeconds;
-            double remaining = (remoteSettings.BoostDurationHours * 3600) - totalToday;
+            double total = playerStats[player.UserIDString].SecondsPlayedToday + (DateTime.Now - playerStats[player.UserIDString].LastLogin).TotalSeconds;
+            double remaining = (remoteSettings.BoostDurationHours * 3600) - total;
             return remaining > 0 ? (int)(remaining / 60) : 0;
         }
 
